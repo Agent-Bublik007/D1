@@ -285,7 +285,7 @@ mkdir -p /mnt/nfs
 
 vim /etc/fstab
 
-192.168.10.2:/raid5/nfs	/mnt/nfs	nfs	intr,soft,_netdev,x-systemd.automount 0 0
+192.168.10.2:/raid0/nfs	/mnt/nfs	nfs	intr,soft,_netdev,x-systemd.automount 0 0
 
 :wq
  
@@ -503,7 +503,7 @@ docker ps -a
 Переносим файл LocalSettings.php на сервер BR-SRV
 Открываем терминал
 
-scp -P 2024 '/home/user/Рабочий стол/LocalSettings.php' sshuser@192.168.0.2:/home/sshuser
+scp -P 3015 '/home/user/Рабочий стол/LocalSettings.php' sshuser@192.168.0.2:/home/sshuser
 sudo cp /home/sshuser/LocalSettings.php /home/user
 
 На BR-SRV (под user)
