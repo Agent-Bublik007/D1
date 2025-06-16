@@ -1,0 +1,618 @@
+2 модуль
+
+1. Настройте доменный контроллер Samba на машине HQ-SRV (https://docs.altlinux.org/ru-RU/domain/10.4/html-single/samba/index.html#id844)
+
+На HQ-SRV
+
+vim /etc/bind/rfc1912.conf
+
+!!!!!закомментировать наши изменения!!!!!
+
+:wq
+
+
+Установить пакет task-samba-dc для Samba DC
+
+apt-get install task-samba-dc
+
+На сервере должны быть установлены пакеты bind и bind-utils(уже установлено):
+
+apt-get install bind bind-utils
+
+⁠Настройка BIND9 для работы с Samba AD:
+
+Отключить chroot:
+
+control bind-chroot disabled
+
+Отключить KRB5RCACHETYPE:
+
+grep -q KRB5RCACHETYPE /etc/sysconfig/bind || echo 'KRB5RCACHETYPE="none"' >> /etc/sysconfig/bind
+
+Подключить плагин BIND_DLZ:
+
+grep -q 'bind-dns' /etc/bind/named.conf || echo 'include "/var/lib/samba/bind-dns/named.conf";' >> /etc/bind/named.conf
+
+Отредактировать файл /etc/bind/options.conf:
+
+в раздел options добавить строки:
+
+Пример файла /etc/bind/options.conf:
+
+options {
+        version "unknown";
+        directory "/etc/bind/zone";
+        dump-file "/var/run/named_dump.db";
+        statistics-file "/var/run/named.stats";
+        recursing-file "/var/run/recursing";
+
+
+        // disables the use of a PID file
+        pid-file none;
+        tkey-gssapi-keytab "/var/lib/samba/bind-dns/dns.keytab";
+        minimal-responses yes;
+
+        listen-on { any; };
+        listen-on-v6 { none; };
+
+        forward first;
+        forwarders { 77.88.8.8; };
+
+        allow-query { any; };
+        allow-recursion { any; };
+
+        //max-cache-ttl 86400;
+
+};
+
+logging {
+        category lame-servers {null;};
+};
+
+:wq
+
+Выполнить остановку bind:
+
+systemctl stop bind
+
+Очищаем базы и конфигурацию Samba
+
+rm -f /etc/samba/smb.conf
+rm -rf /var/lib/samba
+rm -rf /var/cache/samba
+mkdir -p /var/lib/samba/sysvol
+
+Создаем домен в  пакетном режиме
+
+samba-tool domain provision --realm=au-team.irpo --domain au-team --adminpass='P@ssw0rd' --dns-backend=BIND9_DLZ --server-role=dc
+
+Устанавливаем службы samba и bind по умолчанию и запускаем их:
+
+systemctl enable --now samba
+systemctl enable --now bind
+
+В момент создания домена Samba конфигурирует шаблон файла krb5.conf для домена в каталоге /var/lib/samba/private/. 
+Заменим этим файлом файл, находящийся в каталоге /etc/:
+
+cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
+
+Проверка работоспособности домена
+
+samba-tool domain info 127.0.0.1
+
+Создаем записи DNS
+
+samba-tool dns add hq-srv.au-team.irpo au-team.irpo hq-rtr A 192.168.10.1 -Uadministrator
+samba-tool dns add hq-srv.au-team.irpo au-team.irpo hq-rtr A 192.168.20.1 -Uadministrator
+samba-tool dns add hq-srv.au-team.irpo au-team.irpo hq-rtr A 192.168.99.1 -Uadministrator
+samba-tool dns add hq-srv.au-team.irpo au-team.irpo br-rtr A 192.168.0.1 -Uadministrator
+samba-tool dns add hq-srv.au-team.irpo au-team.irpo br-srv A 192.168.0.2 -Uadministrator
+samba-tool dns add hq-srv.au-team.irpo au-team.irpo moodle A 172.16.40.1 -Uadministrator
+samba-tool dns add hq-srv.au-team.irpo au-team.irpo wiki A 172.16.50.1 -Uadministrator
+
+host wiki.au-team.irpo
+host moodle.au-team.irpo
+
+На HQ-CLI
+
+Для ввода компьютера в домен в Центре управления системой необходимо выбрать пункт Пользователи → Аутентификация.
+В окне модуля Аутентификация следует выбрать пункт Домен Active Directory, заполнить поля (Домен, Рабочая группа, Имя компьютера), выбрать пункт SSSD (в единственном домене) и нажать кнопку Применить
+
+На HQ-CLI после ввода в домен 
+
+В терминале:
+
+kinit administrator
+
+apt-get update
+apt-get install admc
+
+Запускаем приложение ADMC
+
+Создаем группу hq
+
+Создаем пользователей 
+user1.hq
+user2.hq
+user3.hq
+user4.hq
+user5.hq
+
+Добавляем всех созданных пользователей в группу hq
+
+2. Сконфигурируйте файловое хранилище
+
+• При помощи трёх дополнительных дисков, размером 1Гб каждый, на HQ-SRV сконфигурируйте дисковый массив уровня 0 
+• Имя устройства – md0, конфигурация массива размещается в файле /etc/mdadm.conf 
+• Обеспечьте автоматическое монтирование в папку /raid0 
+• Создайте раздел, отформатируйте раздел, в качестве файловой системы используйте ext4
+
+(https://www.dmosk.ru/miniinstruktions.php?mini=mdadm&ysclid=m68ymchl9l486930724#conf)
+
+На HQ-SRV
+
+!!!!!!Добавить 3 жестких диска размером 1 Гб
+
+Просмотреть информацию об установленных дисках 
+
+lsblk
+
+Установка утилиты mdadm (должно быть уже установлено)
+
+apt-get install mdadm
+
+Создание рейда
+
+mdadm --create --verbose /dev/md0 -l 0 -n 3 /dev/sd{b,c,d}
+
+ где:
+
+/dev/md0 - устройство RAID, которое появится после сборки; 
+-l 5 - уровень RAID; 
+-n 3 - количество дисков, из которых собирается массив; 
+/dev/sd{b,c,d} — сборка выполняется из дисков sdb, sdc и sdd.
+
+Просмотреть информацию об установленных дисках 
+
+lsblk
+
+Посмотреть информацию о RAID
+
+cat /proc/mdstat
+
+Создание файла mdadm.conf
+
+В файле mdadm.conf находится информация о RAID-массивах и компонентах, которые в них входят. Для его создания выполняем следующие команды:
+
+echo "DEVICE partitions" > /etc/mdadm.conf
+
+mdadm --detail --scan --verbose | awk '/ARRAY/ {print}' >> /etc/mdadm.conf
+
+Создание файловой системы для массива:
+
+mkfs.ext4 /dev/md0
+
+Примонтировать раздел можно командой:
+
+mkdir /raid0
+
+mount /dev/md0 /raid0
+
+Смотрим, что раздел md0 примонтировался
+
+df -h
+
+Сначала смотрим идентификатор раздела:
+
+blkid | grep md0 
+
+Перенаправляем идентификатор раздела md0 в fstab
+
+blkid | grep md0 >> /etc/fstab
+
+Редактируем /etc/fstab
+
+vim /etc/fstab
+
+Приводим перемещенную строку к виду
+
+UUID="(в квадратных скобках будет номер который вы перенаправили)"    /raid0    ext4    defaults    0 0
+
+:wq
+
+Размонтируем раздел /raid0:
+
+umount /raid0
+
+Проверяем автомонтирование: 
+
+mount -a
+
+Смотрим, что раздел md0 примонтировался
+
+df -h
+
+Перезагружаем HQ-SRV
+
+reboot
+
+После перезагрузки проверяем, что раздел md0 примонтировался
+
+df -h
+
+
+• Настройте сервер сетевой файловой системы(nfs), в качестве папки общего доступа выберите /raid0/nfs, доступ для чтения и записи для всей сети 
+в сторону HQ-CLI  
+• На HQ-CLI настройте автомонтирование в папку /mnt/nfs 
+
+На HQ-SRV
+
+mkdir /raid0/nfs
+chmod 777 /raid0/nfs
+
+Устанавливаем службу nfs-server:
+
+apt-get install nfs-server
+
+Откроем каталог для общего доступа в сторону подсети, где находится HQ-CLI
+
+vim /etc/exports
+
+/raid0/nfs 192.168.20.0/28(rw,sync,no_subtree_check)
+
+:wq
+
+Применяем изменения и смотрим, что она экспортировалась:
+
+exportfs -a
+exportfs -v
+
+Включаем и перезапускаем службу NFS:
+
+systemctl enable --now nfs-server
+systemctl restart nfs-server
+
+
+На HQ-CLI
+
+apt-get install nfs-clients
+ 
+Настроим автоматическое монтирование в каталог /mnt/nfs
+
+mkdir -p /mnt/nfs
+ 
+Добавляем следующую строку в конец файла /etc/fstab:
+
+vim /etc/fstab
+
+192.168.10.2:/raid5/nfs	/mnt/nfs	nfs	intr,soft,_netdev,x-systemd.automount 0 0
+
+:wq
+ 
+Проверяем автомонтирование:
+
+mount -a
+mount -v
+
+Проверка
+
+Создаем файл в каталоге /mnt/nfs на HQ-CLI
+
+touch /mnt/nfs/test.txt
+ 
+Смотрим на сервере HQ-SRV, создался ли он:
+
+ls /raid0/nfs/
+ 
+
+3. Настройте службу сетевого времени на базе сервиса chrony
+
+Сервер времени ISP
+
+apt-get install chrony
+
+vim /etc/chrony.conf
+
+Расскомментируем и меняем строчку hwtimestamp (уберем #)
+
+hwtimestamp * 
+
+Расскомментируем и меняем строчку allow (уберем #)
+
+allow 0/0
+
+Расскомментируем и меняем строчку local stratum (уберем #)
+
+local stratum 5
+
+:wq
+
+Запускаем chrony и смотрим статус
+
+systemctl enable --now chronyd
+systemctl status chronyd
+
+Проверяем работоспособность сервера времени
+
+chronyc sources
+
+Клиенты сервера времени (HQ-SRV, HQ-RTR, HQ-CLI, BR-RTR, BR-SRV)
+
+vim /etc/chrony.conf
+
+Комментируем pool и добавляем строку server
+
+#pool pool.ntp.org iburst
+server 172.16.40.1 iburst (где 172.16.40.1 - адрес ISP)
+
+Запускаем chrony и смотрим статус
+
+systemctl restart chronyd
+systemctl status chronyd
+
+Проверяем работоспособность сервера времени
+
+chronyc sources
+
+
+4. Сконфигурируйте ansible на сервере BR-SRV
+
+На CLI запускаем службу ssh
+
+systemctl enable --now sshd
+
+На BR-SRV устанавливаем ansible
+
+apt-get update
+apt-get install ansible sshpass
+
+ansible --version
+
+vim /etc/ansible/ansible.cfg
+
+[defaults]
+
+inventory	= /etc/ansible/hosts
+interpreter_python=/usr/bin/python3
+...
+host_key_checking = False
+
+:wq
+
+vim /etc/ansible/hosts
+
+192.168.10.2 ansible_user=sshuser ansible_password=P@ssw0rd ansible_port=3015
+192.168.20.2 ansible_user=user ansible_password=resu ansible_port=22
+192.168.0.1 ansible_user=net_admin ansible_password=P@$$word ansible_port=22
+192.168.0.2 ansible_user=sshuser ansible_password=P@ssw0rd ansible_port=3015
+
+:wq
+
+ansible all -m ping
+
+5. Развертывание приложений в Docker на сервере BR-SRV
+
+На BR-SRV (под root)
+
+apt-get update
+
+Установка docker и docker-compose:
+
+apt-get install docker-engine
+apt-get install docker-compose
+
+Добавляем  пользователя в группу docker;
+
+usermod user -aG docker
+
+Запускаем службу docker:
+
+systemctl enable --now docker
+
+На BR-SRV (под user)
+
+Создайте в домашней директории пользователя файл wiki.yml для приложения MediaWiki. 
+
+touch /home/user/wiki.yml
+
+Средствами docker compose должен создаваться стек контейнеров с приложением MediaWiki и базой данных. 
+(https://www.mediawiki.org/wiki/Docker/Hub)
+• Используйте два сервиса 
+• Основной контейнер MediaWiki должен называться wiki и использовать образ mediawiki 
+• Файл LocalSettings.php с корректными настройками должен находиться в домашней папке пользователя и автоматически монтироваться в образ. 
+• Контейнер с базой данных должен называться mariadb и использовать образ mariadb. 
+• Он должен создавать базу с названием mediawiki, доступную по стандартному порту, пользователя wiki с паролем WikiP@ssw0rd должен иметь права доступа к этой базе данных  
+• MediaWiki должна быть доступна извне через порт 8080.
+
+
+vim /home/user/wiki.yml
+
+services:
+  MediaWiki:
+    container_name: wiki
+    image: mediawiki
+    restart: always
+    ports: 
+      - 8080:80
+    links:
+      - database
+    volumes:
+      - images:/var/www/html/images
+      # - ./LocalSettings.php:/var/www/html/LocalSettings.php
+  database:
+    container_name: mariadb
+    image: mariadb
+    environment:
+      MYSQL_DATABASE: mediawiki
+      MYSQL_USER: wiki
+      MYSQL_PASSWORD: WikiP@ssw0rd
+      MYSQL_RANDOM_ROOT_PASSWORD: 'yes'
+    volumes:
+      - dbvolume:/var/lib/mysql
+volumes:
+  dbvolume:
+      external: true
+  images:
+
+:wq
+
+Создаем volume с именем dbvolume
+
+docker volume create dbvolume
+
+Запускаем docker compose для формирования конфигурационного файла LocalSettings.php
+
+docker compose -f wiki.yml up -d
+
+Проверяем работоспособность контейнеров
+
+docker ps -a
+
+На HQ-CLI
+
+В браузере вводим http://IP_BR-SRV:8080
+
+Нажимаем set up the wiki
+Нажимаем Далее
+Нажимаем Далее
+
+Тип базы данных - MariaDB, MySQL или совместимая
+Хост базы данных - mariadb
+Имя базы данных - mediawiki
+Префикс таблиц базы данных (без дефисов) - оставляем пустым
+Имя пользователя базы данных: wiki
+Пароль базы данных: WikiP@ssw0rd
+Нажимаем Далее
+
+Нажимаем Далее
+
+Название вики: DEMO-Wiki
+Ваше имя участника: admin
+Пароль: WikiP@ssw0rd
+Пароль еще раз: WikiP@ssw0rd
+Адрес электронной почты: admin@au-team.irpo
+Выбираем хватит уже, просто установите вики
+Нажимаем Далее
+
+Нажимаем Далее
+
+Нажимаем Далее
+
+Смотрим загрузки, там должен пояявиться файл LocalSettings.php (если его нет, нажимаем Загрузить LocalSettings.php)
+
+Переносим файл LocalSettings.php на сервер BR-SRV
+Открываем терминал
+
+scp -P 2024 '/home/user/Рабочий стол/LocalSettings.php' sshuser@192.168.0.2:/home/sshuser
+sudo cp /home/sshuser/LocalSettings.php /home/user
+
+На BR-SRV (под user)
+
+vim /home/user/wiki.yml
+
+убираем # перед строкой   - ./LocalSettings.php:/var/www/html/LocalSettings.php 
+
+Перезапускаем docker-compose
+
+docker compose -f wiki.yml stop
+docker compose -f wiki.yml up -d
+
+На HQ-CLI проверяем работоспособность mediawiki
+
+В браузере вводим http://IP_BR-SRV:8080
+
+
+6. На маршрутизаторах сконфигурируйте статическую трансляцию портов 
+• Пробросьте порт 80 в порт 8080 на BR-SRV на маршрутизаторе BR-RTR, для обеспечения работы сервиса wiki 
+* Пробросьте порт 80 в порт 80 на HQ-SRV на маршрутизаторе HQ-RTR, для обеспечения работы сервиса moodle
+• Пробросьте порт 3015 в порт 3015 на HQ-SRV на маршрутизаторе HQ-RTR 
+• Пробросьте порт 3015 в порт 3015 на BR-SRV на маршрутизаторе BR-RTR
+
+На BR-RTR
+
+iptables -t nat -A PREROUTING -i enp6s18 -p tcp --dport 80 -j DNAT --to-destination 192.168.0.2:8080
+iptables -t nat -A PREROUTING -i enp6s18 -p tcp --dport 3015 -j DNAT --to-destination 192.168.0.2
+
+где 
+enp6s18 - имя внешнего интерфейса на BR-RTR
+192.168.0.2 - IP адрес BR-SRV
+
+iptables-save > /etc/sysconfig/iptables
+systemctl restart iptables
+
+На HQ-RTR
+
+iptables -t nat -A PREROUTING -i enp6s18 -p tcp --dport 80 -j DNAT --to-destination 192.168.10.2:80
+iptables -t nat -A PREROUTING -i enp6s18 -p tcp --dport 3015 -j DNAT --to-destination 192.168.10.2
+
+enp6s18 - имя внешнего интерфейса на HQ-RTR
+192.168.10.2 - IP адрес HQ-SRV
+
+iptables-save > /etc/sysconfig/iptables
+systemctl restart iptables
+
+Проверка:
+
+На HQ-CLI
+
+В браузере http://172.16.50.2 (должен открыться сайт MediaWiki)
+В терминале ssh sshuser@172.16.50.2 -p 3015 (должен зайти на BR-SRV по ssh)
+
+На BR-SRV
+
+В терминале ssh sshuser@172.16.40.2 -p 3015 (должен зайти на HQ-SRV по ssh)
+
+
+8. Настройте веб-сервер nginx как обратный прокси-сервер на ISP
+
+Устанавливаем пакет nginx на ISP
+
+apt-get install nginx
+
+systemctl enable --now nginx
+systemctl status nginx
+ 
+Создаём новый конфигурационный файл proxy:
+
+vim /etc/nginx/sites-enabled.d/proxy.conf
+
+server {
+	listen 80;
+	server_name moodle.au-team.irpo;
+	location / {
+		proxy_pass http://172.16.40.2:80;
+     	}
+} 
+
+server {
+	listen 80;
+	server_name wiki.au-team.irpo;
+	location / {
+		proxy_pass http://172.16.50.2:8080;
+     	}
+}
+
+:wq
+
+Применяем созданную конфигурацию
+
+systemctl restart nginx
+ 
+Проверяем работу обратного прокси с клиента HQ-CLI.
+
+В браузере http://moodle.au-team.irpo
+В браузере http://wiki.au-team.irpo
+ 
+
+
+9. Удобным способом установите приложение Яндекс Браузере для организаций на HQ-CLI
+
+На HQ-CLI
+
+su -	(вводим пароль toor)
+
+apt-get update		(обновляем репозитории)
+apt-get install yandex-browser	(устанваливаем яндекс браузер)
+
+Проверяем: Меню -> Все приложения -> Интернет -> Yandex Browser
+
